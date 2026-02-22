@@ -1,6 +1,12 @@
 # LensCorrection dataset (large image dataset - do not commit)
 lens-correction-train-cleaned/
 
+# Checkpoints and submissions (large binaries - do not commit)
+checkpoints/
+checkpoints_1/
+submission_images/
+submission.zip
+
 # macOS
 .DS_Store
 

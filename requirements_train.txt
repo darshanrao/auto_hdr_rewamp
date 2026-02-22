@@ -1,0 +1,8 @@
+# GeoProj lens correction training
+torch>=2.0
+torchvision
+opencv-python
+numpy
+pandas
+tqdm
+scikit-image
