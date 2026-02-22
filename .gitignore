@@ -5,7 +5,15 @@ lens-correction-train-cleaned/
 checkpoints/
 checkpoints_1/
 submission_images/
+submission_images_bicubic/
 submission.zip
+submission*.zip
+
+# Submission folder (shared separately via Google Drive)
+submission_folder/
+
+# Working outputs
+working/
 
 # macOS
 .DS_Store

@@ -284,6 +284,39 @@ def flow_smoothness_loss(flow: torch.Tensor) -> torch.Tensor:
     )
 
 
+def corner_regularization_loss(pred_flow: torch.Tensor) -> torch.Tensor:
+    """
+    Penalizes large flow magnitude at image corners.
+    Model learns naturally that corners need controlled corrections not aggressive ones.
+
+    pred_flow: (B, 2, H, W)
+    """
+    B, C, H, W = pred_flow.shape
+
+    cy, cx = H / 2.0, W / 2.0
+
+    y = torch.arange(H, dtype=torch.float32, device=pred_flow.device)
+    x = torch.arange(W, dtype=torch.float32, device=pred_flow.device)
+
+    grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
+
+    # Normalized distance from center: 0.0 = center, 1.0 = corner
+    dist = torch.sqrt(
+        ((grid_y - cy) / cy) ** 2 + ((grid_x - cx) / cx) ** 2
+    ).clamp(0, 1)
+
+    # Flow magnitude at each pixel
+    magnitude = torch.sqrt(
+        pred_flow[:, 0] ** 2 + pred_flow[:, 1] ** 2 + 1e-6
+    )
+
+    # Penalize large magnitude weighted by distance
+    # Corner pixels penalized more than center pixels
+    corner_penalty = (magnitude * dist).mean()
+
+    return corner_penalty
+
+
 def photometric_loss(pred_corrected: torch.Tensor, target_corrected: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(pred_corrected, target_corrected)
 
@@ -301,8 +334,15 @@ def total_loss(
     l_flow = flow_endpoint_loss(pred_flow, gt_flow)
     l_photo = photometric_loss(pred_corrected, corr_img)
     l_smooth = flow_smoothness_loss(pred_flow)
+    l_corner = corner_regularization_loss(pred_flow)
 
-    loss = 1.00 * l_edge + 0.70 * l_flow + 0.30 * l_photo + 0.05 * l_smooth
+    loss = (
+        1.00 * l_edge
+        + 0.70 * l_flow
+        + 0.30 * l_photo
+        + 0.05 * l_smooth
+        + 0.10 * l_corner
+    )
 
     if sample_weights is not None:
         loss = loss * sample_weights.mean()
@@ -312,6 +352,7 @@ def total_loss(
         "flow": l_flow.item(),
         "photo": l_photo.item(),
         "smooth": l_smooth.item(),
+        "corner": l_corner.item(),
     }
 
 
@@ -495,7 +536,7 @@ class EarlyStopping:
 def train_one_epoch(model, loader, optimizer, scaler, device, grad_clip: float = 1.0):
     model.train()
     running_loss = 0.0
-    components = {"edge": 0.0, "flow": 0.0, "photo": 0.0, "smooth": 0.0}
+    components = {"edge": 0.0, "flow": 0.0, "photo": 0.0, "smooth": 0.0, "corner": 0.0}
     n = 0
 
     pbar = tqdm(loader, desc="Train", leave=False)
@@ -579,7 +620,7 @@ _DATA_ROOT = Path("/root/projects/automatic-lens-correction/lens-correction-trai
 
 def main(cmd_args=None):
     ap = argparse.ArgumentParser(description="GeoProj lens correction training")
-    ap.add_argument("--batch_size", type=int, default=16)  # 16 for 512x512; 32 for 256x256
+    ap.add_argument("--batch_size", type=int, default=96)
     ap.add_argument("--workers", type=int, default=16)     # match CPU cores for data loading
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--val_ratio", type=float, default=0.1)
@@ -591,7 +632,7 @@ def main(cmd_args=None):
     ap.add_argument("--min_delta", type=float, default=0.001)
     ap.add_argument("--save_dir", type=str, default="checkpoints")
     ap.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
-    ap.add_argument("--img_size", type=int, default=512, help="Training resolution (512 for better straightness)")
+    ap.add_argument("--img_size", type=int, default=256, help="Training resolution")
     args = ap.parse_args(cmd_args)
 
     random.seed(args.seed)
@@ -684,7 +725,7 @@ def main(cmd_args=None):
             f"EPE: {metrics['epe']:.3f}px | EdgeSim: {metrics['edge_sim']:.4f} | "
             f"SSIM: {metrics['ssim']:.4f} | Straight: {metrics['straightness']:.4f} | "
             f"LR: {lr:.2e} | "
-            f"[E:{comp['edge']:.4f} F:{comp['flow']:.4f} P:{comp['photo']:.4f} S:{comp['smooth']:.4f}]"
+            f"[E:{comp['edge']:.4f} F:{comp['flow']:.4f} P:{comp['photo']:.4f} S:{comp['smooth']:.4f} C:{comp['corner']:.4f}]"
         )
 
         early_stop.step(metrics["val_loss"], model.module if hasattr(model, "module") else model, epoch)
@@ -701,7 +742,7 @@ def run_inference(
     input_dir: str,
     output_dir: str,
     device: torch.device | None = None,
-    img_size: int = 512,
+    img_size: int = 256,
 ):
     """Run lens correction on images in input_dir, save to output_dir."""
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
